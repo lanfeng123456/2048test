@@ -12,6 +12,7 @@ import {
   type Direction,
   type Grid,
 } from "@/lib/game/engine";
+import Subscribe from "./Subscribe";
 import styles from "./Game.module.css";
 
 const KEY_TO_DIRECTION: Record<string, Direction> = {
@@ -27,23 +28,48 @@ const KEY_TO_DIRECTION: Record<string, Direction> = {
 
 const SWIPE_THRESHOLD = 30;
 
+const EMPTY_BOARD: Grid = Array.from({ length: 4 }, () =>
+  Array<number>(4).fill(0),
+);
+
+export interface GameEntitlement {
+  subscribed: boolean;
+  freeGamesRemaining: number | null;
+}
+
+interface GameProps {
+  userName: string;
+  initialBest: number;
+  entitlement: GameEntitlement;
+  checkoutSuccess?: boolean;
+}
+
 export default function Game({
   userName,
   initialBest,
-}: {
-  userName: string;
-  initialBest: number;
-}) {
+  entitlement,
+  checkoutSuccess = false,
+}: GameProps) {
   const router = useRouter();
+
   const [grid, setGrid] = useState<Grid | null>(null);
   const [score, setScore] = useState(0);
   const [best, setBest] = useState(initialBest);
   const [won, setWon] = useState(false);
   const [keepPlaying, setKeepPlaying] = useState(false);
   const [over, setOver] = useState(false);
+
+  const [subscribed, setSubscribed] = useState(entitlement.subscribed);
+  const [remaining, setRemaining] = useState<number | null>(
+    entitlement.freeGamesRemaining,
+  );
+  const [locked, setLocked] = useState(
+    !entitlement.subscribed && (entitlement.freeGamesRemaining ?? 0) <= 0,
+  );
+  const [starting, setStarting] = useState(false);
   const savedRef = useRef(false);
 
-  const startNewGame = useCallback(() => {
+  const beginBoard = useCallback(() => {
     setGrid(createGrid());
     setScore(0);
     setWon(false);
@@ -52,16 +78,61 @@ export default function Game({
     savedRef.current = false;
   }, []);
 
-  // Initialise after mount so the random board never causes a hydration mismatch.
+  // Ask the server for permission to start a game (counts a free play unless
+  // subscribed). Locks the board when the free quota is exhausted.
+  const requestStart = useCallback(async () => {
+    if (subscribed) {
+      beginBoard();
+      return;
+    }
+
+    setStarting(true);
+    try {
+      const res = await fetch("/api/games/start", { method: "POST" });
+      if (res.status === 402) {
+        setLocked(true);
+        setRemaining(0);
+        setGrid(null);
+        return;
+      }
+      const data = await res.json();
+      if (data.subscribed) {
+        setSubscribed(true);
+      } else {
+        setRemaining(data.freeGamesRemaining);
+      }
+      setLocked(false);
+      beginBoard();
+    } catch {
+      // Network error — fall back to letting the player start.
+      beginBoard();
+    } finally {
+      setStarting(false);
+    }
+  }, [subscribed, beginBoard]);
+
+  // Initialise after mount (keeps the random board out of SSR/hydration).
   useEffect(() => {
-    startNewGame();
-  }, [startNewGame]);
+    if (subscribed || (remaining ?? 0) > 0) {
+      requestStart();
+    } else {
+      setLocked(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // After returning from a successful checkout, refresh once so the server
+  // recomputes the (webhook-updated) subscription state.
+  useEffect(() => {
+    if (!checkoutSuccess) return;
+    const t = setTimeout(() => router.refresh(), 1500);
+    return () => clearTimeout(t);
+  }, [checkoutSuccess, router]);
 
   const applyMove = useCallback(
     (direction: Direction) => {
       setGrid((current) => {
         if (!current || over) return current;
-
         const result = move(current, direction);
         if (!result.moved) return current;
 
@@ -75,7 +146,6 @@ export default function Game({
     [over],
   );
 
-  // Keyboard controls.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const direction = KEY_TO_DIRECTION[e.key];
@@ -102,7 +172,7 @@ export default function Game({
         if (data && typeof data.best === "number") setBest(data.best);
       })
       .catch(() => {
-        /* ignore network errors; score saving is best-effort */
+        /* best-effort */
       });
   }, [over, score]);
 
@@ -151,11 +221,31 @@ export default function Game({
         </div>
       </header>
 
+      {checkoutSuccess && (
+        <div className={styles.successBanner}>
+          ✅ 支付成功！订阅正在激活，稍候即可无限畅玩。
+        </div>
+      )}
+
       <div className={styles.toolbar}>
-        <span className={styles.user}>你好，{userName}</span>
+        <span className={styles.user}>
+          你好，{userName}
+          {subscribed ? (
+            <span className={styles.badgePro}>已订阅 ✓</span>
+          ) : (
+            <span className={styles.badgeFree}>
+              剩余免费 {remaining ?? 0} 局
+            </span>
+          )}
+        </span>
         <div className={styles.toolbarButtons}>
-          <button type="button" className={styles.btn} onClick={startNewGame}>
-            重新开始
+          <button
+            type="button"
+            className={styles.btn}
+            onClick={requestStart}
+            disabled={starting}
+          >
+            {starting ? "…" : "重新开始"}
           </button>
           <button type="button" className={styles.btnGhost} onClick={handleLogout}>
             登出
@@ -169,7 +259,7 @@ export default function Game({
         onTouchEnd={onTouchEnd}
       >
         <div className={styles.board}>
-          {grid?.flatMap((row, r) =>
+          {(grid ?? EMPTY_BOARD).flatMap((row, r) =>
             row.map((value, c) => (
               <div
                 key={`${r}-${c}`}
@@ -182,17 +272,30 @@ export default function Game({
           )}
         </div>
 
-        {over && (
-          <div className={styles.overlay}>
-            <p className={styles.overlayText}>游戏结束</p>
-            <p className={styles.overlayScore}>得分 {score}</p>
-            <button type="button" className={styles.btn} onClick={startNewGame}>
-              再来一局
-            </button>
+        {locked && (
+          <div className={`${styles.overlay} ${styles.paywall}`}>
+            <p className={styles.overlayText}>免费次数已用完</p>
+            <p className={styles.overlayScore}>
+              订阅后即可无限畅玩 2048
+            </p>
+            <Subscribe />
           </div>
         )}
 
-        {won && !keepPlaying && !over && (
+        {!locked && over && (
+          <div className={styles.overlay}>
+            <p className={styles.overlayText}>游戏结束</p>
+            <p className={styles.overlayScore}>得分 {score}</p>
+            <button type="button" className={styles.btn} onClick={requestStart}>
+              再来一局
+            </button>
+            {!subscribed && (remaining ?? 0) <= 0 && (
+              <p className={styles.overlayHint}>这是最后一局免费游戏</p>
+            )}
+          </div>
+        )}
+
+        {!locked && won && !keepPlaying && !over && (
           <div className={styles.overlay}>
             <p className={styles.overlayText}>你赢了！🎉</p>
             <p className={styles.overlayScore}>得分 {score}</p>
@@ -204,7 +307,11 @@ export default function Game({
               >
                 继续挑战
               </button>
-              <button type="button" className={styles.btnGhost} onClick={startNewGame}>
+              <button
+                type="button"
+                className={styles.btnGhost}
+                onClick={requestStart}
+              >
                 再来一局
               </button>
             </div>

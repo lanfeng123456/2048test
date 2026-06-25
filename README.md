@@ -78,11 +78,41 @@ npm run dev
 
 打开 http://localhost:3000 —— 未登录会跳转到 `/login`，可用邮箱注册或 Google 登录。
 
-## 玩法
+## 玩法与订阅
 
-- **方向键** 或 **WASD** 移动方块；移动端可 **滑动**。
-- 相同数字合并，目标合成 **2048**。
+- **方向键** 或 **WASD** 移动方块；移动端可 **滑动**。相同数字合并，目标合成 **2048**。
 - 游戏结束时分数自动保存，最高分在刷新后保留。
+- **免费用户累计可玩 3 局**，用完后出现订阅弹窗；**订阅用户无限畅玩**。
+
+## 集成 Creem 支付（包月 / 包年）
+
+1. 注册 [Creem](https://creem.io)，在后台创建两个**订阅产品**：包月、包年，记下各自的 `product_id`。
+2. 在 **Settings > API Keys** 取得 API Key（开发用 test 模式 key）。
+3. 在 **Developers > Webhooks** 新建 Webhook：
+   - 端点 URL：`<你的公网地址>/api/webhook/creem`（本地开发用 ngrok 等隧道暴露 `localhost:3000`）
+   - 复制 **Webhook Secret**。
+4. 填写 `.env`：
+   ```bash
+   CREEM_TEST_MODE="true"            # 上线改为 "false"
+   CREEM_API_KEY="creem_test_xxx"
+   CREEM_WEBHOOK_SECRET="whsec_xxx"
+   CREEM_PRODUCT_ID_MONTHLY="prod_xxx"
+   CREEM_PRODUCT_ID_YEARLY="prod_xxx"
+   ```
+5. 流程：点击订阅 → `POST /api/checkout` 创建 Creem 结账会话并跳转 → 支付完成回跳 `/?checkout=success`；Creem 通过 Webhook 通知 `subscription.paid / canceled / expired`，服务端校验 `creem-signature`（HMAC-SHA256）后更新订阅状态。
+
+> 未配置 Creem 凭据时，订阅按钮会返回友好提示（503），不影响免费游戏与登录。
+
+## 代理网络说明（重要）
+
+若服务器所在网络需要代理才能访问 Google / Creem（如国内环境），本项目已在 [src/instrumentation.ts](src/instrumentation.ts) 中读取 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量，把 Node 的 `fetch`（用于 Google OAuth 令牌交换、Creem API）路由到该代理。设置示例：
+
+```bash
+# PowerShell
+$env:HTTPS_PROXY="http://127.0.0.1:7890"
+```
+
+无代理变量时该逻辑自动跳过，对生产环境无影响。
 
 ## 常用脚本
 

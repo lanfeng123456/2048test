@@ -17,14 +17,32 @@ model User {
   email         String    @unique
   emailVerified Boolean   @default(false)
   image         String?
+  freeGamesUsed Int       @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  sessions Session[]
-  accounts Account[]
-  scores   Score[]
+  sessions      Session[]
+  accounts      Account[]
+  scores        Score[]
+  subscriptions Subscription[]
 
   @@map("user")
+}
+
+model Subscription {
+  id                  String    @id @default(cuid())
+  userId              String
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creemSubscriptionId String    @unique
+  creemCustomerId     String?
+  product             String?
+  status              String
+  currentPeriodEnd    DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("subscription")
 }
 
 model Session {

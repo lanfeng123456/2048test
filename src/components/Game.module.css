@@ -56,6 +56,43 @@
 .user {
   font-size: 14px;
   color: #8a7d70;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badgePro {
+  background: #edc22e;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.badgeFree {
+  background: #cdc1b4;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.successBanner {
+  background: #e7f6e7;
+  border: 1px solid #b6e0b6;
+  color: #2e7d32;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  text-align: center;
+}
+
+.overlayHint {
+  font-size: 13px;
+  color: #a39689;
 }
 
 .toolbarButtons {
@@ -143,6 +180,11 @@
   gap: 12px;
   background: rgba(238, 228, 218, 0.78);
   border-radius: 8px;
+}
+
+.paywall {
+  background: rgba(250, 248, 239, 0.96);
+  padding: 16px;
 }
 
 .overlayText {
