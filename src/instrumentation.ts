@@ -6,6 +6,16 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
+  // Safety net: a stray space before "=" in .env (e.g. `KEY ="value"`) produces
+  // an env var whose name has trailing whitespace, silently breaking lookups.
+  // Copy any such keys to their trimmed name.
+  for (const key of Object.keys(process.env)) {
+    const trimmed = key.trim();
+    if (trimmed !== key && process.env[trimmed] === undefined) {
+      process.env[trimmed] = process.env[key];
+    }
+  }
+
   const proxyUrl =
     process.env.HTTPS_PROXY ||
     process.env.https_proxy ||

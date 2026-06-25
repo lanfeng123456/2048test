@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     const checkout = await creem.checkouts.create({
       productId,
       requestId: session.user.id,
-      successUrl: `${baseUrl}/?checkout=success`,
+      successUrl: `${baseUrl}/api/checkout/return`,
       metadata: {
         userId: session.user.id,
         email: session.user.email,

@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import {
+  asId,
+  parseDate,
+  periodEndForPlan,
+  setSubscriptionStatus,
+  upsertSubscription,
+} from "@/lib/subscriptions";
 
 // Verify the creem-signature header: HMAC-SHA256(rawBody, webhookSecret) in hex.
 function verifySignature(
@@ -25,15 +31,6 @@ interface CreemWebhook {
   object?: CreemObject;
 }
 
-function asId(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (value && typeof value === "object" && "id" in value) {
-    const id = (value as { id?: unknown }).id;
-    return typeof id === "string" ? id : undefined;
-  }
-  return undefined;
-}
-
 function resolveUserId(obj: CreemObject): string | undefined {
   const metadata = obj.metadata as { userId?: unknown } | undefined;
   if (metadata && typeof metadata.userId === "string") return metadata.userId;
@@ -41,91 +38,80 @@ function resolveUserId(obj: CreemObject): string | undefined {
   return typeof requestId === "string" ? requestId : undefined;
 }
 
-function parseDate(value: unknown): Date | undefined {
-  if (typeof value !== "string" && typeof value !== "number") return undefined;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
-// Find the subscription object whether the event carries it directly
-// (subscription.*) or nests it inside a checkout (checkout.completed).
-function extractSubscription(eventType: string, obj: CreemObject): CreemObject | undefined {
+// The subscription object is carried directly on subscription.* events or
+// nested inside the checkout on checkout.completed.
+function extractSubscription(
+  eventType: string,
+  obj: CreemObject,
+): CreemObject | undefined {
   if (eventType.startsWith("subscription.")) return obj;
   const nested = obj.subscription;
-  return nested && typeof nested === "object" ? (nested as CreemObject) : undefined;
-}
-
-async function markActive(sub: CreemObject, fallbackUserId?: string): Promise<void> {
-  const creemSubscriptionId = asId(sub.id) ?? asId(sub);
-  if (!creemSubscriptionId) return;
-
-  const userId = resolveUserId(sub) ?? fallbackUserId;
-  const creemCustomerId = asId(sub.customer);
-  const product = asId(sub.product);
-  const currentPeriodEnd =
-    parseDate(sub.currentPeriodEndDate) ??
-    parseDate((sub as Record<string, unknown>).current_period_end_date);
-
-  const existing = await prisma.subscription.findUnique({
-    where: { creemSubscriptionId },
-  });
-
-  if (existing) {
-    await prisma.subscription.update({
-      where: { creemSubscriptionId },
-      data: {
-        status: "active",
-        creemCustomerId: creemCustomerId ?? existing.creemCustomerId,
-        product: product ?? existing.product,
-        currentPeriodEnd: currentPeriodEnd ?? existing.currentPeriodEnd,
-      },
-    });
-    return;
-  }
-
-  if (!userId) {
-    console.error("[webhook] cannot create subscription without userId");
-    return;
-  }
-
-  await prisma.subscription.create({
-    data: {
-      creemSubscriptionId,
-      userId,
-      creemCustomerId,
-      product,
-      status: "active",
-      currentPeriodEnd,
-    },
-  });
-}
-
-async function markStatus(sub: CreemObject, status: string): Promise<void> {
-  const creemSubscriptionId = asId(sub.id) ?? asId(sub);
-  if (!creemSubscriptionId) return;
-  await prisma.subscription.updateMany({
-    where: { creemSubscriptionId },
-    data: { status },
-  });
+  return nested && typeof nested === "object"
+    ? (nested as CreemObject)
+    : undefined;
 }
 
 async function handleEvent(eventType: string, obj: CreemObject): Promise<void> {
   switch (eventType) {
-    case "checkout.completed":
     case "subscription.active":
     case "subscription.paid": {
       const sub = extractSubscription(eventType, obj);
-      if (sub) await markActive(sub, resolveUserId(obj));
+      if (!sub) break;
+      await upsertSubscription({
+        creemSubscriptionId: asId(sub.id) ?? "",
+        userId: resolveUserId(sub) ?? resolveUserId(obj),
+        creemCustomerId: asId(sub.customer),
+        product: asId(sub.product),
+        currentPeriodEnd:
+          parseDate(sub.currentPeriodEndDate) ??
+          parseDate((sub as Record<string, unknown>).current_period_end_date),
+        status: "active",
+      });
       break;
     }
-    case "subscription.canceled":
-      await markStatus(obj, "canceled");
+    case "checkout.completed": {
+      const sub = extractSubscription(eventType, obj);
+      if (sub) {
+        // Recurring subscription product.
+        await upsertSubscription({
+          creemSubscriptionId: asId(sub.id) ?? "",
+          userId: resolveUserId(sub) ?? resolveUserId(obj),
+          creemCustomerId: asId(sub.customer),
+          product: asId(sub.product),
+          currentPeriodEnd:
+            parseDate(sub.currentPeriodEndDate) ??
+            parseDate((sub as Record<string, unknown>).current_period_end_date),
+          status: "active",
+        });
+        break;
+      }
+      // One-time payment product → grant timed access based on the plan.
+      const metadata = obj.metadata as { plan?: unknown } | undefined;
+      const plan = typeof metadata?.plan === "string" ? metadata.plan : undefined;
+      const orderId = asId(obj.order) ?? asId(obj.id);
+      if (orderId) {
+        await upsertSubscription({
+          creemSubscriptionId: orderId,
+          userId: resolveUserId(obj),
+          creemCustomerId: asId(obj.customer),
+          product: asId(obj.product),
+          currentPeriodEnd: periodEndForPlan(plan),
+          status: "onetime",
+        });
+      }
       break;
-    case "subscription.expired":
-      await markStatus(obj, "expired");
+    }
+    case "subscription.canceled": {
+      const id = asId(obj.id);
+      if (id) await setSubscriptionStatus(id, "canceled");
       break;
+    }
+    case "subscription.expired": {
+      const id = asId(obj.id);
+      if (id) await setSubscriptionStatus(id, "expired");
+      break;
+    }
     default:
-      // Unhandled event types are acknowledged but ignored.
       break;
   }
 }
